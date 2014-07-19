@@ -54,7 +54,8 @@ executable wc-pipes
   main-is:             Main.hs
 
   -- Modules included in this executable, other than Main.
-  other-modules:       Data.WordCount
+  other-modules:       Data.WordCount.Core,
+                       Data.WordCount.Files
 
   -- LANGUAGE extensions used by modules in this package.
   other-extensions:    NoImplicitPrelude,
@@ -66,7 +67,9 @@ executable wc-pipes
   build-depends:       base >=4.6 && <4.7,
                        pipes == 4.1.2,
                        mtl == 2.1.2,
-                       bytestring == 0.10.0.2
+                       bytestring == 0.10.0.2,
+                       transformers == 0.3.0.0,
+                       mmorph == 1.0.3
 
   -- Directories containing source files.
   hs-source-dirs:      src

@@ -2,35 +2,38 @@
 
 module Main where
 
-import Prelude (Bool(..), ($), (>), (++), show)
-import Control.Monad (Monad(..), forM_)
-import Control.Applicative ((<$>),(<*>))
-import Data.Monoid (Monoid(..))
+import Prelude (String, ($))
+import Control.Monad (Monad(..))
+import Control.Applicative ((<$>))
+import Data.Monoid (Monoid(..), (<>))
+import Data.List (map, elem)
 
-import Data.WordCount
+import Data.WordCount.Core (lineCounter, wordCounter, charCounter, byteCounter, CounterM)
+import Data.WordCount.Files (wcStdin, wcFiles)
 
 import System.IO
-
-data Config = Config {
-  linesEnabled :: Bool,
-  wordsEnabled :: Bool,
-  charsEnabled :: Bool,
-  bytesEnabled :: Bool
-}
+import System.Environment (getArgs)
 
 main = do
-  counts <- countFile stdin (lineCounter `mappend` wordCounter `mappend` charCounter)
-  printFileCounts "stdin" counts
+  (counter, files) <- parseArgs
+  case files of
+    [] -> wcStdin counter
+    fs -> wcFiles fs counter
 
-countFile :: Handle -> Counter CountsM () -> IO Counts
-countFile handle counter = do
-  contents <- hGetContents handle
-  return $ runCounter contents counter
+parseArgs :: IO (CounterM, [FilePath])
+parseArgs = do
+  args <- getArgs
+  case args of
+    ('-':opts):files -> return (optsToCounter opts, files)
+    files -> return (defaultCounter, files)
 
-printFileCounts :: FilePath -> Counts -> IO ()
-printFileCounts fn cnts = do
-  forM_ [_lines, _words, _chars, _bytes] $ \ext -> do
-    if ext cnts > 0
-      then putStr $ "\t" ++ (show $ ext cnts)
-      else return ()
-  putStrLn $ "\t" ++ fn
+defaultCounter :: CounterM
+defaultCounter = lineCounter <> wordCounter <> charCounter
+
+optsToCounter :: String -> CounterM
+optsToCounter s = mconcat $ map charMap s
+  where
+    charMap 'l' = lineCounter
+    charMap 'w' = wordCounter
+    charMap 'c' = charCounter
+    charMap 'm' = if elem 'c' s then mempty else byteCounter

@@ -1,8 +1,12 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
 
-module Data.WordCount.Files (
-  wcFiles,
-  wcStdin
+
+----------
+--- We just export the Counter typeclass instance for PipeCounter so it can be run on files
+--- We use a full stream here to pipe files through and then an End object, to total and return
+
+module Data.WordCount.Pipes.Files (
 ) where
 
 import Prelude (($), flip, (+), (>), IO, show)
@@ -15,26 +19,36 @@ import Control.Monad (Monad(..), forM_, mapM_, liftM, liftM2, forever)
 import Control.Applicative (pure, (<$>), (<*>))
 import Control.Monad.Morph (lift)
 
-import Data.WordCount.Core (Counts(..), CountsM, CounterM, addCounts, runCounter)
+import Data.WordCount.Types (Counts(..), addCounts, Counter(..), printCounts, summarize)
+import Data.WordCount.Pipes.Core (CountsM, PipeCounter, runCounter)
 
 import Pipes.Prelude (fromHandle, last)
 import Pipes ((>->), Consumer, Producer, Pipe, await, yield, runEffect)
 
 data FileStream = File FilePath | StdIn | End
 
-wcFiles :: [FilePath] -> CounterM -> IO ()
+-- | The main export from here is how to run counters on files
+instance Counter PipeCounter where
+  countFiles = wcFiles
+  countStdin = wcStdin
+
+wcFiles :: [FilePath] -> PipeCounter -> IO ()
 wcFiles fps cm = runFileStream (map File fps) cm
 
-wcStdin :: CounterM -> IO ()
+wcStdin :: PipeCounter -> IO ()
 wcStdin cm = runFileStream [StdIn] cm
 
-runFileStream :: [FileStream] -> CounterM -> IO ()
+-- | Run a counter on a list of FileStreams (files/stdin) and print the results
+runFileStream :: [FileStream] -> PipeCounter -> IO ()
 runFileStream fss cm = runEffect $ fileStreams fss >-> fileCounts cm >-> collect >-> printem
 
+-- | Array->Producer of FileStreams
+-- | When this ends, the stream ends.
 fileStreams :: MonadIO m => [FileStream] -> Producer FileStream m ()
 fileStreams fps = mapM_ yield (fps ++ [End])
 
-fileCounts :: MonadIO m => CounterM -> Pipe FileStream (FileStream, Counts) m ()
+-- | Run the counts from Data.WordCount.Pipes.Core by reading the file/stdin and running it
+fileCounts :: MonadIO m => PipeCounter -> Pipe FileStream (FileStream, Counts) m ()
 fileCounts cm = forever go
   where
     go = do
@@ -48,6 +62,7 @@ fileCounts cm = forever go
           yield (StdIn, c)
         End -> yield (End, mempty)
 
+-- | Collect up the counts for totalling
 collect :: MonadIO m => Pipe (FileStream, Counts) (FileStream, Counts) m ()
 collect = go mempty
   where
@@ -59,6 +74,7 @@ collect = go mempty
           yield (fs, c2)
           go (c `addCounts` c2)
 
+-- | Print the results
 printem :: MonadIO m => Consumer (FileStream, Counts) m ()
 printem = go 0
   where
@@ -72,21 +88,11 @@ printem = go 0
           else return ()
       go (i + 1)
 
-countFile :: CounterM -> FilePath -> IO Counts
+countFile :: PipeCounter -> FilePath -> IO Counts
 countFile cm fp = openFile fp ReadMode >>= countHandle cm
 
-countHandle :: CounterM -> Handle -> IO Counts
+-- | Helper to actually count
+countHandle :: PipeCounter -> Handle -> IO Counts
 countHandle cm h = do
   contents <- hGetContents h
   return $ runCounter contents cm
-
-printCounts :: Counts -> String -> IO ()
-printCounts cnts fn = do
-  forM_ [_lines, _words, _chars, _bytes] $ \ext -> do
-    if ext cnts > 0
-      then putStr ("\t" ++ (show $ ext cnts))
-      else return ()
-  putStr ("\t" ++ fn ++ "\n")
-
-summarize :: Counts -> IO ()
-summarize = flip printCounts "total"

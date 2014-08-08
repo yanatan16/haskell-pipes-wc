@@ -23,23 +23,24 @@ where
 
 import Data.WordCount.Types (Counts(..), CountsUpdater, upLines, upWords, upChars, upBytes)
 
-import Prelude (Show (..), Char, String, Int, (.), ($), (+), max, words, lines, init, null, last)
+import Prelude (Show (..), String, Int, (.), ($), (+), (==), and, not, const, length, otherwise, max, and, words, lines, init, null, last)
 
-import Data.Word (Word8)
+import Data.Tuple (uncurry)
+import Data.Text.Lazy (Text, uncons, chunksOf)
+import Data.Char (Char, isSpace)
+import Data.Maybe (Maybe(..))
 import Data.ByteString.Lazy (ByteString, unpack) -- unpack :: ByteString -> [Word8]
-import Data.ByteString.Lazy.Char8 (pack)         -- pack :: String -> ByteString
+import Data.ByteString.Lazy.Builder (charUtf8, toLazyByteString)         -- pack :: String -> ByteString
 
 import Data.Monoid (Monoid(..))
-import Data.Maybe (Maybe(..))
-import Control.Monad (mapM_, forever, Monad(..), (=<<), (>>))
-import Control.Monad.Trans (lift)
+import Control.Monad (mapM_, forever, Monad(..), (>>), (>=>))
 import Control.Monad.Writer (MonadWriter(..), WriterT, execWriterT)
 import Control.Monad.Identity (Identity, runIdentity)
 
 import qualified Pipes.Prelude as P (tee, last)
 import Pipes ((>->), Consumer, Producer, Pipe, await, yield, each, cat)
 
-type PipeCounterBase m r = Pipe String String m r
+type PipeCounterBase m r = Pipe (Maybe Char) (Maybe Char) m r
 
 -- | We run the Pipes system with this monad, a simple WriterT of Identity
 type CountsM = WriterT Counts Identity
@@ -51,52 +52,57 @@ instance (Monad m) => Monoid (PipeCounterBase m r) where
   mempty = cat
   mappend = (>->)
 
-runCounter :: String -> PipeCounter -> Counts
-runCounter s c = execCounts (yield s >-> c)
+runCounter :: Text -> PipeCounter -> Counts
+runCounter s c = execCounts (text' s >-> chars' >-> c)
 
-execCounts :: Producer String CountsM () -> Counts
+execCounts :: Producer (Maybe Char) CountsM () -> Counts
 execCounts = runIdentity . execWriterT . P.last
 
 -- | Line Count
 lineCounter :: PipeCounter
-lineCounter = P.tee $ (lines' >-> countConsumer upLines)
+lineCounter = P.tee $ counter upLines (\c -> if c == '\n' then 1 else 0)
 
 -- | Word Count
 wordCounter :: PipeCounter
-wordCounter = P.tee $ lines' >-> words' >-> countConsumer upWords
+wordCounter = P.tee $ counterState upWords cntr 'a'
+  where
+    cntr c c'
+      | and [isSpace c, not $ isSpace c'] = (1, c')
+      | otherwise                         = (0, c')
+
 
 -- | Char Count
 charCounter :: PipeCounter
-charCounter = P.tee $ chars' >-> countConsumer upChars
+charCounter = P.tee $ counter upChars (const 1)
 
 -- | Byte Count
 byteCounter :: PipeCounter
-byteCounter = P.tee $ bytes' >-> countConsumer upBytes
+byteCounter = P.tee $ counter upBytes cntr
+  where cntr = length . unpack . toLazyByteString . charUtf8
 
-countConsumer :: MonadWriter Counts m => CountsUpdater -> Consumer a m ()
-countConsumer update = go 0
+counter :: MonadWriter Counts m => CountsUpdater -> (a -> Int) -> Consumer (Maybe a) m ()
+counter update f = counterState update (\_ a -> (f a, ())) ()
+
+counterState :: MonadWriter Counts m => CountsUpdater -> (b -> a -> (Int, b)) -> b -> Consumer (Maybe a) m ()
+counterState update f st = go 0 st
   where
-    go n = do
-      await
-      tell $ update (n + 1)
-      go (n + 1)
+    go n st = do
+      mc <- await
+      case mc of
+        Nothing -> tell $ update n
+        Just c -> do
+          let (i, st') = f st c
+          go (n + i) st'
 
-bytes' :: Monad m => Pipe String Word8 m ()
-bytes' = forever $ mapM_ yield . unpack . pack =<< await
-
-chars' :: Monad m => Pipe String Char m ()
-chars' = forever $ mapM_ yield =<< await
-
-words' :: Monad m => Pipe String String m ()
-words' = forever $ mapM_ yield . words =<< await
-
-lines' :: Monad m => Pipe String String m ()
-lines' = forever go
+chars' :: Monad m => Pipe (Maybe Text) (Maybe Char) m ()
+chars' = forever $ await >>= go
   where
-    go = do
-      s <- await
-      let l = lines s
-      mapM_ yield $ init l
-      if null $ last l
-        then return ()
-        else yield $ last l
+    go Nothing = yield Nothing
+    go (Just txt) = do
+      case uncons txt of
+        Nothing -> return ()
+        Just (c, txt') -> yield (Just c) >> go (Just txt')
+
+text' :: Monad m => Text -> Producer (Maybe Text) m ()
+--text' = (mapM_ (yield . Just) . chunksOf 64) >=> \_ -> yield Nothing
+text' = yield . Just
